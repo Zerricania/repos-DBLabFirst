@@ -1,0 +1,379 @@
+using System;
+using System.Collections.Generic;
+using System.Data;
+using System.Data.SqlClient;
+
+namespace WindowsFormsApp1
+{
+    /// <summary>
+    /// Все обращения к базе данных собраны здесь, чтобы страницы UI
+    /// не содержали SQL-запросов напрямую.
+    /// </summary>
+    public static class DbHelper
+    {
+        private static DataTable ExecuteQuery(string sql, params SqlParameter[] parameters)
+        {
+            using (SqlConnection connection = Database.GetConnection())
+            using (SqlCommand command = new SqlCommand(sql, connection))
+            {
+                if (parameters != null) command.Parameters.AddRange(parameters);
+
+                using (SqlDataAdapter adapter = new SqlDataAdapter(command))
+                {
+                    DataTable table = new DataTable();
+                    adapter.Fill(table);
+                    return table;
+                }
+            }
+        }
+
+        private static void ExecuteNonQuery(string sql, params SqlParameter[] parameters)
+        {
+            using (SqlConnection connection = Database.GetConnection())
+            using (SqlCommand command = new SqlCommand(sql, connection))
+            {
+                if (parameters != null) command.Parameters.AddRange(parameters);
+
+                connection.Open();
+                command.ExecuteNonQuery();
+            }
+        }
+
+        private static DataRow FirstRowOrNull(DataTable table)
+        {
+            return table.Rows.Count > 0 ? table.Rows[0] : null;
+        }
+
+        // ==================== Books ====================
+
+        public static DataTable GetBooks(string search)
+        {
+            string sql = @"
+                SELECT Id, Title, Author, Izdatelstvo, Year, Price, Janr, Remarks
+                FROM dbo.Books
+                WHERE (@s = N'' OR Title LIKE @like OR Author LIKE @like OR Janr LIKE @like)
+                ORDER BY Id";
+
+            return ExecuteQuery(sql,
+                new SqlParameter("@s", search ?? ""),
+                new SqlParameter("@like", "%" + search + "%"));
+        }
+
+        public static DataRow GetBookById(int id)
+        {
+            return FirstRowOrNull(ExecuteQuery(
+                "SELECT Id, Title, Author, Izdatelstvo, Year, Price, Janr, Remarks FROM dbo.Books WHERE Id=@id",
+                new SqlParameter("@id", id)));
+        }
+
+        public static DataTable GetBooksForCombo()
+        {
+            return ExecuteQuery("SELECT Id, Title, Price FROM dbo.Books ORDER BY Title");
+        }
+
+        public static void InsertBook(string title, string author, string izdatelstvo, int year, decimal price, string janr, string remarks)
+        {
+            ExecuteNonQuery(@"
+                INSERT INTO dbo.Books (Title, Author, Izdatelstvo, Year, Price, Janr, Remarks)
+                VALUES (@t, @a, @i, @y, @p, @j, @r)",
+                new SqlParameter("@t", title),
+                new SqlParameter("@a", author),
+                new SqlParameter("@i", (object)izdatelstvo ?? DBNull.Value),
+                new SqlParameter("@y", year),
+                new SqlParameter("@p", price),
+                new SqlParameter("@j", (object)janr ?? DBNull.Value),
+                new SqlParameter("@r", (object)remarks ?? DBNull.Value));
+        }
+
+        public static void UpdateBook(int id, string title, string author, string izdatelstvo, int year, decimal price, string janr, string remarks)
+        {
+            ExecuteNonQuery(@"
+                UPDATE dbo.Books
+                SET Title=@t, Author=@a, Izdatelstvo=@i, Year=@y, Price=@p, Janr=@j, Remarks=@r
+                WHERE Id=@id",
+                new SqlParameter("@t", title),
+                new SqlParameter("@a", author),
+                new SqlParameter("@i", (object)izdatelstvo ?? DBNull.Value),
+                new SqlParameter("@y", year),
+                new SqlParameter("@p", price),
+                new SqlParameter("@j", (object)janr ?? DBNull.Value),
+                new SqlParameter("@r", (object)remarks ?? DBNull.Value),
+                new SqlParameter("@id", id));
+        }
+
+        public static void DeleteBook(int id)
+        {
+            ExecuteNonQuery("DELETE FROM dbo.Books WHERE Id=@id", new SqlParameter("@id", id));
+        }
+
+        // ---- Массовые операции (задания из лабораторной №3) ----
+
+        public static void ApplyDiscountToAllBooks(decimal percent)
+        {
+            ExecuteNonQuery(
+                "UPDATE dbo.Books SET Price = Price - Price * (@p / 100.0)",
+                new SqlParameter("@p", percent));
+        }
+
+        public static void ApplyDiscountAbovePrice(decimal percent, decimal priceThreshold)
+        {
+            ExecuteNonQuery(
+                "UPDATE dbo.Books SET Price = Price - Price * (@p / 100.0) WHERE Price > @t",
+                new SqlParameter("@p", percent),
+                new SqlParameter("@t", priceThreshold));
+        }
+
+        public static void ChangeGenreBulk(string fromGenre, string toGenre)
+        {
+            ExecuteNonQuery(
+                "UPDATE dbo.Books SET Janr = @to WHERE Janr = @from",
+                new SqlParameter("@to", toGenre),
+                new SqlParameter("@from", fromGenre));
+        }
+
+        // ---- Расширенный фильтр (задания из лабораторной №4) ----
+
+        public static DataTable GetDistinctJanrs()
+        {
+            return ExecuteQuery(
+                "SELECT DISTINCT Janr FROM dbo.Books WHERE Janr IS NOT NULL AND Janr <> N'' ORDER BY Janr");
+        }
+
+        public static DataTable GetDistinctRemarks()
+        {
+            return ExecuteQuery(
+                "SELECT DISTINCT Remarks FROM dbo.Books WHERE Remarks IS NOT NULL AND Remarks <> N'' ORDER BY Remarks");
+        }
+
+        /// <summary>
+        /// Многокритериальная фильтрация книг реляционным способом:
+        /// каждый вызов формирует новый SQL-запрос и уходит на сервер.
+        /// </summary>
+        public static DataTable GetBooksAdvanced(BookFilterCriteria c)
+        {
+            List<string> conditions = new List<string>();
+            List<SqlParameter> pars = new List<SqlParameter>();
+
+            if (c.FilterTitle && !string.IsNullOrWhiteSpace(c.Title))
+            {
+                conditions.Add("Title LIKE @title");
+                pars.Add(new SqlParameter("@title", "%" + c.Title + "%"));
+            }
+
+            if (c.FilterAuthor && !string.IsNullOrWhiteSpace(c.Author))
+            {
+                conditions.Add("Author LIKE @author");
+                pars.Add(new SqlParameter("@author", "%" + c.Author + "%"));
+            }
+
+            if (c.FilterIzdatelstvo && !string.IsNullOrWhiteSpace(c.Izdatelstvo))
+            {
+                conditions.Add("Izdatelstvo LIKE @izd");
+                pars.Add(new SqlParameter("@izd", "%" + c.Izdatelstvo + "%"));
+            }
+
+            if (c.FilterYear && c.Year.HasValue)
+            {
+                conditions.Add("Year = @year");
+                pars.Add(new SqlParameter("@year", c.Year.Value));
+            }
+
+            if (c.FilterPrice && c.PriceFrom.HasValue && c.PriceTo.HasValue)
+            {
+                conditions.Add("Price BETWEEN @pf AND @pt");
+                pars.Add(new SqlParameter("@pf", c.PriceFrom.Value));
+                pars.Add(new SqlParameter("@pt", c.PriceTo.Value));
+            }
+
+            if (c.FilterJanr && !string.IsNullOrWhiteSpace(c.Janr))
+            {
+                conditions.Add("Janr = @janr");
+                pars.Add(new SqlParameter("@janr", c.Janr));
+            }
+
+            if (c.FilterRemarks && !string.IsNullOrWhiteSpace(c.Remarks))
+            {
+                conditions.Add("Remarks = @remarks");
+                pars.Add(new SqlParameter("@remarks", c.Remarks));
+            }
+
+            string sql = "SELECT Id, Title, Author, Izdatelstvo, Year, Price, Janr, Remarks FROM dbo.Books";
+
+            if (conditions.Count > 0)
+            {
+                sql += " WHERE " + string.Join(" AND ", conditions);
+            }
+
+            // SortField приходит только из фиксированного набора значений (Title/Author/Year/Price),
+            // которые задаёт сама форма через radio-button-ы, поэтому конкатенация здесь безопасна.
+            if (!string.IsNullOrEmpty(c.SortField))
+            {
+                sql += " ORDER BY " + c.SortField + (c.SortDescending ? " DESC" : " ASC");
+            }
+            else
+            {
+                sql += " ORDER BY Id";
+            }
+
+            return ExecuteQuery(sql, pars.ToArray());
+        }
+
+        // ==================== Discounts ====================
+
+        public static DataTable GetDiscounts(string search)
+        {
+            string sql = @"
+                SELECT Id, DName, Percents
+                FROM dbo.Discounts
+                WHERE (@s = N'' OR DName LIKE @like)
+                ORDER BY Id";
+
+            return ExecuteQuery(sql,
+                new SqlParameter("@s", search ?? ""),
+                new SqlParameter("@like", "%" + search + "%"));
+        }
+
+        public static DataRow GetDiscountById(int id)
+        {
+            return FirstRowOrNull(ExecuteQuery(
+                "SELECT Id, DName, Percents FROM dbo.Discounts WHERE Id=@id",
+                new SqlParameter("@id", id)));
+        }
+
+        public static DataTable GetDiscountsForCombo()
+        {
+            return ExecuteQuery("SELECT Id, DName FROM dbo.Discounts ORDER BY DName");
+        }
+
+        public static void InsertDiscount(string name, int percents)
+        {
+            ExecuteNonQuery("INSERT INTO dbo.Discounts (DName, Percents) VALUES (@n, @p)",
+                new SqlParameter("@n", name),
+                new SqlParameter("@p", percents));
+        }
+
+        public static void UpdateDiscount(int id, string name, int percents)
+        {
+            ExecuteNonQuery("UPDATE dbo.Discounts SET DName=@n, Percents=@p WHERE Id=@id",
+                new SqlParameter("@n", name),
+                new SqlParameter("@p", percents),
+                new SqlParameter("@id", id));
+        }
+
+        public static void DeleteDiscount(int id)
+        {
+            ExecuteNonQuery("DELETE FROM dbo.Discounts WHERE Id=@id", new SqlParameter("@id", id));
+        }
+
+        // ==================== Customers ====================
+
+        public static DataTable GetCustomers(string search)
+        {
+            string sql = @"
+                SELECT c.Id, c.FullName, c.Phone, ISNULL(d.DName, N'—') AS DiscountName
+                FROM dbo.Customers c
+                LEFT JOIN dbo.Discounts d ON c.DiscountId = d.Id
+                WHERE (@s = N'' OR c.FullName LIKE @like OR c.Phone LIKE @like)
+                ORDER BY c.Id";
+
+            return ExecuteQuery(sql,
+                new SqlParameter("@s", search ?? ""),
+                new SqlParameter("@like", "%" + search + "%"));
+        }
+
+        public static DataRow GetCustomerById(int id)
+        {
+            return FirstRowOrNull(ExecuteQuery(
+                "SELECT Id, FullName, Phone, DiscountId FROM dbo.Customers WHERE Id=@id",
+                new SqlParameter("@id", id)));
+        }
+
+        public static DataTable GetCustomersForCombo()
+        {
+            return ExecuteQuery("SELECT Id, FullName FROM dbo.Customers ORDER BY FullName");
+        }
+
+        public static void InsertCustomer(string fullName, string phone, int? discountId)
+        {
+            ExecuteNonQuery(@"
+                INSERT INTO dbo.Customers (FullName, Phone, DiscountId)
+                VALUES (@f, @p, @d)",
+                new SqlParameter("@f", fullName),
+                new SqlParameter("@p", (object)phone ?? DBNull.Value),
+                new SqlParameter("@d", (object)discountId ?? DBNull.Value));
+        }
+
+        public static void UpdateCustomer(int id, string fullName, string phone, int? discountId)
+        {
+            ExecuteNonQuery(@"
+                UPDATE dbo.Customers
+                SET FullName=@f, Phone=@p, DiscountId=@d
+                WHERE Id=@id",
+                new SqlParameter("@f", fullName),
+                new SqlParameter("@p", (object)phone ?? DBNull.Value),
+                new SqlParameter("@d", (object)discountId ?? DBNull.Value),
+                new SqlParameter("@id", id));
+        }
+
+        public static void DeleteCustomer(int id)
+        {
+            ExecuteNonQuery("DELETE FROM dbo.Customers WHERE Id=@id", new SqlParameter("@id", id));
+        }
+
+        // ==================== SoldBooks ====================
+
+        public static DataTable GetSoldBooks(string search)
+        {
+            string sql = @"
+                SELECT sb.Id, b.Title AS BookTitle, c.FullName AS CustomerName,
+                       sb.SaleDate, sb.Quantity, sb.Price
+                FROM dbo.SoldBooks sb
+                JOIN dbo.Books b ON sb.BookId = b.Id
+                JOIN dbo.Customers c ON sb.CustomerId = c.Id
+                WHERE (@s = N'' OR b.Title LIKE @like OR c.FullName LIKE @like)
+                ORDER BY sb.Id";
+
+            return ExecuteQuery(sql,
+                new SqlParameter("@s", search ?? ""),
+                new SqlParameter("@like", "%" + search + "%"));
+        }
+
+        public static DataRow GetSoldBookById(int id)
+        {
+            return FirstRowOrNull(ExecuteQuery(
+                "SELECT Id, BookId, CustomerId, SaleDate, Quantity, Price FROM dbo.SoldBooks WHERE Id=@id",
+                new SqlParameter("@id", id)));
+        }
+
+        public static void InsertSoldBook(int bookId, int customerId, DateTime saleDate, int quantity, decimal price)
+        {
+            ExecuteNonQuery(@"
+                INSERT INTO dbo.SoldBooks (BookId, CustomerId, SaleDate, Quantity, Price)
+                VALUES (@b, @c, @d, @q, @p)",
+                new SqlParameter("@b", bookId),
+                new SqlParameter("@c", customerId),
+                new SqlParameter("@d", saleDate),
+                new SqlParameter("@q", quantity),
+                new SqlParameter("@p", price));
+        }
+
+        public static void UpdateSoldBook(int id, int bookId, int customerId, DateTime saleDate, int quantity, decimal price)
+        {
+            ExecuteNonQuery(@"
+                UPDATE dbo.SoldBooks
+                SET BookId=@b, CustomerId=@c, SaleDate=@d, Quantity=@q, Price=@p
+                WHERE Id=@id",
+                new SqlParameter("@b", bookId),
+                new SqlParameter("@c", customerId),
+                new SqlParameter("@d", saleDate),
+                new SqlParameter("@q", quantity),
+                new SqlParameter("@p", price),
+                new SqlParameter("@id", id));
+        }
+
+        public static void DeleteSoldBook(int id)
+        {
+            ExecuteNonQuery("DELETE FROM dbo.SoldBooks WHERE Id=@id", new SqlParameter("@id", id));
+        }
+    }
+}
