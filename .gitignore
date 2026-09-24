@@ -45,3 +45,6 @@ artifacts/
 .env
 *.pfx
 *.publishsettings
+
+# NuGet packages folder
+packages/
