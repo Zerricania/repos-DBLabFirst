@@ -1,0 +1,2 @@
+ALTER TABLE dbo.Books
+    ALTER COLUMN Author NVARCHAR(100);
